@@ -1,18 +1,20 @@
 """
 Capella Open Data STAC クローラー
-2024〜2025年の全シーンを収集してJSONに保存。
+2024〜2025年の全シーンを収集し、地理的にクラスタリングしてJSONに保存。
 
 JSON構造:
 {
   "generated": "ISO8601",
   "total_scenes": N,
-  "scenes": [
+  "total_groups": M,
+  "groups": [
     {
-      "datetime": "2024-01-01T14:19:37Z",
-      "platform": "capella-10",
-      "tif_href": "https://...",
-      "thumbnail": "https://...",
-      "geometry": [[lat,lng], ...]   // 5点閉合 [TL,TR,BR,BL,TL]
+      "center": [lat, lng],
+      "count": 5,
+      "latest_geometry": [[lat,lng], ...],
+      "scenes": [
+        {"datetime": "...", "platform": "...", "tif_href": "...", "thumbnail": "..."}
+      ]
     }
   ]
 }
@@ -29,6 +31,7 @@ import requests
 STAC_BASE = 'https://capella-open-data.s3.amazonaws.com/stac/capella-open-data-by-datetime/'
 TARGET_YEARS = ['2024', '2025']
 WORKERS = int(os.environ.get('CAPELLA_WORKERS', '12'))
+CLUSTER_DEG = float(os.environ.get('CAPELLA_CLUSTER_DEG', '0.1'))  # ~10km
 
 SESSION = requests.Session()
 SESSION.headers.update({'User-Agent': 'CapellaFetcher/1.0'})
@@ -115,10 +118,54 @@ def fetch_day(day_url):
     return scenes
 
 
+def get_center(geometry):
+    """ポリゴン座標リスト[[lat,lng],...]の重心を返す。"""
+    lats = [p[0] for p in geometry]
+    lngs = [p[1] for p in geometry]
+    return [sum(lats) / len(lats), sum(lngs) / len(lngs)]
+
+
+def cluster_scenes(scenes, threshold=CLUSTER_DEG):
+    """中心が threshold 度以内のシーンを同グループにまとめる（貪欲法）。"""
+    used = [False] * len(scenes)
+    groups = []
+
+    for i, sc in enumerate(scenes):
+        if used[i]:
+            continue
+        c0 = get_center(sc['geometry'])
+        group = [sc]
+        used[i] = True
+
+        for j in range(i + 1, len(scenes)):
+            if used[j]:
+                continue
+            c1 = get_center(scenes[j]['geometry'])
+            dist = ((c0[0] - c1[0]) ** 2 + (c0[1] - c1[1]) ** 2) ** 0.5
+            if dist < threshold:
+                group.append(scenes[j])
+                used[j] = True
+
+        # datetime 昇順でソート（最後が最新）
+        group.sort(key=lambda s: s['datetime'])
+        centers = [get_center(s['geometry']) for s in group]
+        avg_lat = sum(c[0] for c in centers) / len(centers)
+        avg_lng = sum(c[1] for c in centers) / len(centers)
+
+        groups.append({
+            'center':          [round(avg_lat, 5), round(avg_lng, 5)],
+            'count':           len(group),
+            'latest_geometry': group[-1]['geometry'],
+            'scenes':          group,
+        })
+
+    return groups
+
+
 def main():
     out_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'capella_scenes.json')
 
-    print(f'対象年: {TARGET_YEARS}')
+    print(f'対象年: {TARGET_YEARS}  クラスタ閾値: {CLUSTER_DEG}度')
     print('日カタログURLを収集中...')
     day_urls = collect_day_urls()
     print(f'{len(day_urls)}日分のカタログを発見\n')
@@ -139,17 +186,21 @@ def main():
             if done % 50 == 0 or done == len(day_urls):
                 print(f'  [{done}/{len(day_urls)}] 累計 {len(all_scenes)} シーン')
 
-    # 日時でソート
+    # 日時でソートしてからクラスタリング
     all_scenes.sort(key=lambda s: s['datetime'])
+    print(f'\nクラスタリング中 ({len(all_scenes)}シーン)...')
+    groups = cluster_scenes(all_scenes)
+    print(f'{len(groups)}グループに集約')
 
     out = {
         'generated':    datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
         'total_scenes': len(all_scenes),
-        'scenes':       all_scenes,
+        'total_groups': len(groups),
+        'groups':       groups,
     }
     with open(out_path, 'w', encoding='utf-8') as f:
         json.dump(out, f, ensure_ascii=False, separators=(',', ':'))
-    print(f'\n完了: {len(all_scenes)}シーン → {out_path}')
+    print(f'完了: {len(all_scenes)}シーン / {len(groups)}グループ → {out_path}')
 
 
 if __name__ == '__main__':
