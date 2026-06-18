@@ -96,10 +96,17 @@ def fetch_day(day_url):
         assets = item.get('assets', {})
         geom = item.get('geometry', {})
 
-        tif_href = assets.get('HH', {}).get('href', '')
         thumbnail = assets.get('thumbnail', {}).get('href', '')
         dt = props.get('datetime', '')
         platform = props.get('platform', '')
+
+        # GEO TIF URL を thumbnail から生成（_thumb.png → .tif）
+        # thumbnailはGEOフォルダを指すため、GEOのTIFが確実に取得できる
+        # GECはGeoTIFF.jsで読めないため使わない
+        if thumbnail and '_thumb.png' in thumbnail:
+            tif_href = thumbnail.replace('_thumb.png', '.tif')
+        else:
+            tif_href = assets.get('HH', {}).get('href', '')
 
         # GeoJSON座標 [lng,lat] → [lat,lng] に変換
         coords_raw = geom.get('coordinates', [[]])[0] if geom.get('type') == 'Polygon' else []
