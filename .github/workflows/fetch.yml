@@ -1,0 +1,36 @@
+name: Fetch Capella Scenes
+
+on:
+  schedule:
+    - cron: '0 4 * * *'   # 毎日 04:00 UTC (日本時間 13:00)
+  workflow_dispatch:
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Run fetcher
+        env:
+          CAPELLA_WORKERS: '16'
+        run: python fetch_capella.py
+
+      - name: Commit if changed
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add capella_scenes.json
+          git diff --cached --quiet || git commit -m "auto: update capella_scenes.json [$(date -u +%Y-%m-%dT%H:%M:%SZ)]"
+          git push
